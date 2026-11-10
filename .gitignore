@@ -1,0 +1,11 @@
+# Python bytecode
+__pycache__/
+*.pyc
+
+# Simulation outputs and saved scenarios (local data, not code)
+runs/
+scenarios/
+
+# Locally drawn or uploaded areas and regenerated caches
+areas/huddersfield-colne-cso-1108180441/
+areas/*/cache/scene.json
