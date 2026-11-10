@@ -13,6 +13,33 @@ ROOT = Path(__file__).parent
 RUNS = ROOT / "runs"
 JOB = {"kind": None, "id": None, "proc": None}   # one heavy job at a time: a run or an area preparation
 LOCK = threading.Lock()
+RUN_ID = __import__("re").compile(r"^\d{8}-\d{6}-[0-9a-f]{4}$")
+
+
+def run_label(rid):
+    """The name given to a run (runs/<id>/label.txt), or ''."""
+    f = RUNS / rid / "label.txt"
+    return f.read_text(encoding="utf-8").strip()[:80] if f.exists() else ""
+
+
+def run_outfalls(rid, sim_h):
+    """Volume, peak flow and time flowing at each outfall of the imported drainage network (names S_*), read from the
+    engine report. Lets a run show, for example, how much a combined sewer overflow spilled. [] if none."""
+    f = RUNS / rid / "model.rpt"
+    if not f.exists(): return []
+    out, inside = [], False
+    for ln in f.read_text(errors="ignore").splitlines():
+        if ln.strip() == "Outfall Loading Summary": inside = True; continue
+        if inside:
+            w = ln.split()
+            if w and w[0] == "System": break
+            if len(w) == 5 and w[0].startswith("S_"):
+                try:
+                    out.append(dict(name=w[0][2:], hours=round(float(w[1]) / 100 * sim_h, 2), peak_m3s=float(w[3]),
+                                    volume_m3=round(float(w[4]) * 1000)))
+                except ValueError:
+                    pass
+    return out
 
 
 def start_bench():
@@ -341,6 +368,9 @@ class Handler(BaseHTTPRequestHandler):
             result = json.loads(res.read_text()) if res else (json.loads(base.read_text()) if base.exists() else None)
             if result is not None:
                 result.setdefault("run", res.parent.name if res else f"{A['id']}-baseline")
+                if res and RUN_ID.match(result["run"]):
+                    result["label"] = run_label(result["run"])
+                    result["outfalls"] = run_outfalls(result["run"], float((result.get("params") or {}).get("sim") or 0))
             return self._send(200, {"area": {k: v for k, v in A.items() if k != "dir"},
                                     "static": areas.static_layers(A), "result": result,
                                     "baseline": json.loads(base.read_text())["stats"] if base.exists() else None})
@@ -404,9 +434,11 @@ class Handler(BaseHTTPRequestHandler):
                 except Exception:
                     continue
                 if q.get("area") != aid: continue
-                out.append(dict(id=f.parent.name, measures=len(q.get("measures") or []),
-                                names=[m.get("name") for m in (q.get("measures") or [])][:6], depth=q.get("depth"), duration=q.get("duration")))
-                if len(out) >= 30: break
+                rv = [r for r in (q.get("rivers") or []) if r.get("mode") == "wave"]
+                out.append(dict(id=f.parent.name, label=run_label(f.parent.name), measures=len(q.get("measures") or []),
+                                names=[m.get("name") for m in (q.get("measures") or [])][:6], depth=q.get("depth"), duration=q.get("duration"),
+                                river_peak=max([r.get("peak", 0) for r in rv], default=None)))
+                if len(out) >= 60: break
             return self._send(200, out)
         if p.startswith("/api/measures/"):
             try:
@@ -425,6 +457,9 @@ class Handler(BaseHTTPRequestHandler):
             rid = p.rsplit("/", 1)[1]; f = RUNS / rid / "result.json"
             if not f.exists(): return self._send(404, {"error": "not ready"})
             res = json.loads(f.read_text()); res.setdefault("run", rid)
+            if RUN_ID.match(rid):
+                res["label"] = run_label(rid)
+                res["outfalls"] = run_outfalls(rid, float((res.get("params") or {}).get("sim") or 0))
             return self._send(200, res)
         if p.startswith("/api/video/") and p.endswith("/file"):
             rid = p.split("/")[3]; name = self.path.split("name=")[-1] if "name=" in self.path else "simulation.mp4"
@@ -474,6 +509,13 @@ class Handler(BaseHTTPRequestHandler):
                 proc = subprocess.Popen([sys.executable, str(ROOT / "prepare.py"), A["id"]], cwd=ROOT)
                 JOB.update(kind="area", id=A["id"], proc=proc)
             return self._send(200, {"id": A["id"]})
+        if p.startswith("/api/label/"):            # name a run, so it is easy to find under Open and Compare with
+            rid = p.rsplit("/", 1)[1]
+            if not RUN_ID.match(rid) or not (RUNS / rid / "result.json").exists():
+                return self._send(404, {"error": "no such run"})
+            label = " ".join(str(body.get("label", "")).split())[:80]
+            (RUNS / rid / "label.txt").write_text(label, encoding="utf-8")
+            return self._send(200, {"id": rid, "label": label})
         if p.startswith("/api/measures/"):
             A = areas.load(p.rsplit("/", 1)[1])
             import core as _core

@@ -648,12 +648,19 @@ label.chk.big{font-size:14px;color:var(--ink)}
   <div class="dlg">
     <h2 id="resTitle">Scenario results</h2>
     <p class="sub" id="resDesc"></p>
-    <label class="unit" style="display:flex;gap:8px;align-items:center;margin:4px 0 10px">Compare with
+    <label class="unit" style="display:flex;gap:8px;align-items:center;margin:4px 0 6px">Showing
+      <select id="runSel" style="width:auto;flex:1" title="Open any saved run of this area: its maps, replay and results"></select></label>
+    <div class="unit" style="display:flex;gap:8px;align-items:center;margin:0 0 6px">
+      <label for="runName">Name</label>
+      <input id="runName" type="text" maxlength="80" placeholder="Name this run, e.g. Flood with defences" style="flex:1">
+      <button type="button" class="ghost sm" id="runNameSave">Save name</button></div>
+    <label class="unit" style="display:flex;gap:8px;align-items:center;margin:0 0 10px">Compare with
       <select id="refSel" style="width:auto;flex:1"></select></label>
     <div class="tabs rtabs" role="tablist" aria-label="Results">
       <button type="button" role="tab" data-rtab="water" aria-selected="true">Water</button>
       <button type="button" role="tab" data-rtab="impact" aria-selected="false">Impacts</button>
       <button type="button" role="tab" data-rtab="cost" aria-selected="false">Costs</button>
+      <button type="button" role="tab" data-rtab="drain" aria-selected="false" id="rtabDrain" hidden>Drainage</button>
       <button type="button" role="tab" data-rtab="checks" aria-selected="false">Checks</button>
       <button type="button" role="tab" data-rtab="building" aria-selected="false" id="rtabBuilding" hidden>Building</button>
     </div>
@@ -679,6 +686,10 @@ label.chk.big{font-size:14px;color:var(--ink)}
       <p class="note"><label style="display:inline-flex;gap:6px;align-items:center">Multiply damage by <input class="num" type="number" id="dmgFactor" value="1" min="0.1" max="10" step="0.01" style="width:80px"></label>
         for example an exchange rate and inflation to today's pounds; with a factor other than 1, figures are in your units.</p>
       <p class="note">Damage: JRC global flood depth-damage functions (Huizinga, de Moel and Szewczyk 2017, doi:10.2760/16510), European curves and UK maximum damage values per m² of building, in euros at 2010 prices, using the water depth beside each building. Defence costs are the ones you enter in the Defences panel. One storm only, not an annual average: indicative, not a full appraisal.</p>
+    </div>
+    <div class="rpanel" data-rpanel="drain" role="tabpanel" hidden>
+      <table class="rtable"><thead class="rhead"></thead><tbody id="resTableDrain"></tbody></table>
+      <p class="note">From the imported drainage network. Each outfall is where the network leaves the model: for a combined sewer overflow (CSO), the overflow outfall's volume is the spill to the river and its time flowing is the spill duration; the outfall towards treatment carries the pass-forward flow. Read from the engine report for this run.</p>
     </div>
     <div class="rpanel" data-rpanel="building" role="tabpanel" hidden><div id="bldPanel"></div></div>
     <div class="rpanel" data-rpanel="checks" role="tabpanel" hidden>
@@ -847,7 +858,7 @@ async function openArea(id){
   $('showResults').hidden = true;
   if(r.result){
     const isBase = r.baseline && r.result.stats.runtime_s === r.baseline.runtime_s;
-    load(r.result, isBase ? 'Showing: replay of 28 June 2012 (Thunder Thursday). Design your own scenario below.' : 'Last run: '+describe(r.result.params));
+    load(r.result, isBase ? 'Showing: replay of 28 June 2012 (Thunder Thursday). Design your own scenario below.' : (r.result.label ? r.result.label + ': ' : 'Last run: ')+describe(r.result.params));
     R.isBase = isBase;
     if(!isBase){ $('showResults').hidden = false; }
   } else clearResult();
@@ -1484,18 +1495,46 @@ async function fillRefs(){
   if(!AREA) return;
   let runs = [];
   try { runs = await fetch('/api/runs/' + AREA.id).then(r => r.json()); } catch(e){}
-  const opts = [];
+  const opts = [], esc = t => String(t).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'})[c]);
   if(S && AREA.features && AREA.features.river_inflow) opts.push(['__base', '2012 replay']);
-  runs.filter(r => !R || r.id !== R.run).forEach(r => opts.push([r.id, `${r.id.slice(0, 13).replace('-', ' ')}: ${r.depth} mm of rain in ${r.duration} min` + (r.measures ? `, ${r.measures} defence${r.measures > 1 ? 's' : ''}` : ', no defences')]));
-  $('refSel').innerHTML = '<option value="">Nothing</option>' + opts.map(([v, t]) => `<option value="${v}">${t}</option>`).join('');
+  const when = id => `${id.slice(6, 8)}/${id.slice(4, 6)} ${id.slice(9, 11)}:${id.slice(11, 13)}`;
+  const what = r => `${r.depth} mm of rain in ${r.duration} min` + (r.river_peak ? `, rivers up to ${r.river_peak} m³/s` : '') +
+    (r.measures ? `, ${r.measures} defence${r.measures > 1 ? 's' : ''}` : ', no defences');
+  const txt = r => r.label ? `${r.label} (${when(r.id)})` : `${when(r.id)}: ${what(r)}`;
+  RUNLIST = runs;
+  runs.filter(r => !R || r.id !== R.run).forEach(r => opts.push([r.id, txt(r)]));
+  $('refSel').innerHTML = '<option value="">Nothing</option>' + opts.map(([v, t]) => `<option value="${v}">${esc(t)}</option>`).join('');
+  $('runSel').innerHTML = (R && R.run && !runs.some(r => r.id === R.run) ? `<option value="${R.run}">${esc(R.isBase ? '2012 replay' : 'Current run')}</option>` : '') +
+    runs.map(r => `<option value="${r.id}">${esc(txt(r))}</option>`).join('');
+  if(R && R.run) $('runSel').value = R.run;
   if(CMP && CMP.run) $('refSel').value = CMP.run; else if(CMP && CMPLABEL === '2012 replay') $('refSel').value = '__base';
 }
 $('refSel').onchange = async e => {
   const v = e.target.value;
   if(!v) { CMP = null; CMPLABEL = ''; }
   else if(v === '__base') { const r = await fetch('/api/area/' + AREA.id).then(x => x.json()); CMP = r.baseline ? {stats: r.baseline} : null; CMPLABEL = '2012 replay'; }
-  else { CMP = await fetch('/api/result/' + v).then(x => x.json()); CMPLABEL = 'Run ' + v.slice(9, 13).replace(/(..)(..)/, '$1:$2'); }
+  else { CMP = await fetch('/api/result/' + v).then(x => x.json()); CMPLABEL = CMP.label || 'Run ' + v.slice(9, 13).replace(/(..)(..)/, '$1:$2'); }
   updateDiff(); showResults(R);
+};
+let RUNLIST = [];
+// open any saved run of this area as the one shown: map, replay, 3D and results
+$('runSel').onchange = async e => {
+  const v = e.target.value; if(!v || (R && R.run === v)) return;
+  $('resStatus').textContent = 'Opening the run…';
+  try {
+    const res = await fetch('/api/result/' + v).then(x => { if(!x.ok) throw new Error('not found'); return x.json(); });
+    if(CMP && CMP.run === v){ CMP = null; CMPLABEL = ''; }
+    load(res, (res.label ? res.label + ': ' : 'Saved run: ') + describe(res.params));
+    $('showResults').hidden = false; $('resStatus').textContent = '';
+    await fillRefs(); showResults(res);
+  } catch(err){ $('resStatus').textContent = 'Could not open that run.'; }
+};
+$('runNameSave').onclick = async () => {
+  if(!R || !R.run || !/^\d{8}-\d{6}-[0-9a-f]{4}$/.test(R.run)) { $('resStatus').textContent = 'This run cannot be named.'; return; }
+  const r = await fetch('/api/label/' + R.run, {method:'POST', body: JSON.stringify({label: $('runName').value})}).then(x => x.json());
+  R.label = r.label; $('runname').textContent = (r.label ? r.label + ': ' : 'Saved run: ') + describe(R.params);
+  $('resStatus').textContent = r.label ? `Saved the name "${r.label}".` : 'Name cleared.';
+  fillRefs();
 };
 function updateDiff(){
   const ok = !!(R && R.cells && CMP && CMP.cells && CMP.cells.NX === R.cells.NX && CMP.cells.NY === R.cells.NY);
@@ -1668,7 +1707,12 @@ function showResults(res){
     .concat(s.v_sewer_spill != null ? [['Water pushed back out through manholes', fmtVol(s.v_sewer_spill), b && b.v_sewer_spill != null ? fmtVol(b.v_sewer_spill) : '']] : [])
     .concat(s.v_sewer_out != null ? [['Water carried to the network outfalls', fmtVol(s.v_sewer_out), b && b.v_sewer_out != null ? fmtVol(b.v_sewer_out) : '']] : [])
     .concat(s.n_surcharged != null ? [['Manholes full to ground level / spilling', `${s.n_surcharged} / ${s.n_spilling}`, b && b.n_surcharged != null ? `${b.n_surcharged} / ${b.n_spilling}` : '']] : [])
-    .concat([['Your defences in this run', String(s.measures || 0), b ? String(b.measures || 0) : '']]));
+    .concat([['Your defences in this run', String(s.measures || 0), b ? String(b.measures || 0) : '']]))
+    .concat((res.outfalls || []).flatMap(o => { const c = CMP && CMP.outfalls ? CMP.outfalls.find(x => x.name === o.name) : null;
+      return [[`Outfall ${o.name}: volume`, fmtVol(o.volume_m3), c ? fmtVol(c.volume_m3) : ''],
+              [`Outfall ${o.name}: time flowing`, fmtMin(o.hours * 60), c ? fmtMin(c.hours * 60) : ''],
+              [`Outfall ${o.name}: peak flow`, (o.peak_m3s * 1000).toFixed(0) + ' l/s', c ? (c.peak_m3s * 1000).toFixed(0) + ' l/s' : '']]; }));
+  $('runName').value = res.label || '';
   const det = [];
   if(s.sites_list && s.sites_list.length) det.push('<b>Key sites affected:</b> ' + s.sites_list.map(x => `${x.name} (${x.kind.toLowerCase()}, ${x.depth} m)`).join('; ') + '.');
   if(s.roads_worst && s.roads_worst.length) det.push('<b>Most affected roads:</b> ' + s.roads_worst.slice(0, 6).map(x => `${x.name} (${x.m} m, up to ${x.depth} m deep)`).join('; ') + '.');
@@ -1676,13 +1720,17 @@ function showResults(res){
   $('resHead').innerHTML = `<tr><th></th><th>This run</th>${b ? `<th>${CMPLABEL}</th>` : ''}</tr>`;
   document.querySelectorAll('#dlgRes .rhead').forEach(t => t.innerHTML = $('resHead').innerHTML);
   // rows go to the tab they belong to: impacts (buildings, roads, sites), costs (damage, defences), water (the rest)
-  const tabOf = l => /^(Buildings|Roads|Key sites)/.test(l) ? 'impact' : /damage|Damage|cost|Cost|defences/.test(l) ? 'cost' : 'water';
+  const tabOf = l => /^(Buildings|Roads|Key sites)/.test(l) ? 'impact' : /damage|Damage|cost|Cost|defences/.test(l) ? 'cost'
+    : /^(Outfall|Water taken|Water pushed|Water carried|Manholes)/.test(l) ? 'drain' : 'water';
   const row = ([a,y,z]) => `<tr><td>${a}</td><td class="you">${y}</td>${b ? `<td>${z||''}</td>` : ''}</tr>`;
   const put = (id, tab, empty) => { const rs = rows.filter(r => tabOf(r[0]) === tab);
     $(id).innerHTML = rs.length ? rs.map(row).join('') : `<tr><td class="empty" colspan="3">${empty}</td></tr>`; };
   put('resTable', 'water', '');
   put('resTableImpact', 'impact', 'No impact figures for this run (runs from older versions, or no buildings or roads in the area). Rerun it to see them.');
   put('resTableCost', 'cost', 'No cost figures for this run.');
+  put('resTableDrain', 'drain', 'No drainage network in this run.');
+  $('rtabDrain').hidden = !rows.some(r => tabOf(r[0]) === 'drain');
+  if($('rtabDrain').hidden && $('rtabDrain').getAttribute('aria-selected') === 'true') document.querySelector('[data-rtab="water"]').click();
   document.querySelectorAll('#dlgRes .rhead').forEach(t => t.innerHTML = $('resHead').innerHTML);
   const tyneRun = estMax(s) != null;
   $('stack').hidden = tyneRun;
